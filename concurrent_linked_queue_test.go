@@ -1,120 +1,247 @@
 package collection
 
 import (
-	"math/rand"
+	"fmt"
 	"sync"
 	"sync/atomic"
 	"testing"
 
-	. "github.com/smartystreets/goconvey/convey"
+	_ "unsafe" // for linkname
 )
 
-func TestConcurrentLinkedQueue_Contains(t *testing.T) {
+//go:linkname fastrand runtime.fastrand
+func fastrand() uint32
 
-}
-
-func TestConcurrentLinkedQueue_Delete(t *testing.T) {
-
-}
-
-func TestConcurrentLinkedQueue_Insert(t *testing.T) {
-	q := NewLinkedQueue()
-	Convey("concurrent insert", t, func() {
-		count := 10000
-		var wg sync.WaitGroup
-		var succ int32
-		wg.Add(count)
-		for i := 0; i < count; i++ {
-			go func() {
-				if q.Insert(rand.Int31n(1000)) {
-					atomic.AddInt32(&succ, 1)
-				}
-				wg.Done()
-			}()
-		}
-		wg.Wait()
-		So(q.Len(), ShouldEqual, succ)
-	})
-}
-
-func BenchmarkConcurrentLinkedQueue_Insert(b *testing.B) {
-	q := NewLinkedQueue()
-	var count int32 = 1000000
-	// first half to delete
-	eles := make([]int32, 0, count)
-	for i := 0; i < int(count); i++ {
-		eles = append(eles, rand.Int31n(10000))
-	}
-	b.ResetTimer()
-	var index int32 = -1
-	b.RunParallel(func(pb *testing.PB) {
-		for pb.Next() {
-			q.Insert(eles[atomic.AddInt32(&index, 1)])
-		}
-	})
-}
-
-func TestConcurrentLinkedQueue_Len(t *testing.T) {
-}
-
-func TestConcurrentLinkedQueue_Range(t *testing.T) {
-}
-
-func TestConcurrentLinkedQueue_findBAndA(t *testing.T) {
-
-}
-
-func TestNewLinkedQueue(t *testing.T) {
-	Convey("NewLinkedQueue", t, func() {
-		Convey("all success", func() {
-			q := NewLinkedQueue()
-			So(q, ShouldNotBeNil)
-			So(q.Len(), ShouldEqual, 0)
-		})
-	})
+//go:nosplit
+func fastrandn(n uint32) uint32 {
+	return uint32(uint64(fastrand()) * uint64(n) >> 32)
 }
 
 func TestLinkedQueue(t *testing.T) {
-	q := NewLinkedQueue()
-	var count int32 = 100000
-	// first half to delete
-	eles := make([]int32, 0, count)
-	for i := 0; i < int(count); i++ {
-		eles = append(eles, rand.Int31n(10000))
+	// Correctness.
+	l := NewInt()
+
+	if l.Len() != 0 {
+		t.Fatal("invalid length")
+	}
+	if l.Contains(0) {
+		t.Fatal("invalid contains")
+	}
+	if l.Delete(0) {
+		t.Fatal("invalid delete")
 	}
 
-	Convey("concurrent test", t, func() {
-		var wg sync.WaitGroup
-		Convey("concurrent insert", func() {
-			var succ int32
-			wg.Add(int(count))
-			for i := 0; i < int(count); i++ {
-				index := i
-				go func() {
-					if q.Insert(eles[index]) {
-						atomic.AddInt32(&succ, 1)
-					}
-					wg.Done()
-				}()
-			}
-			wg.Wait()
-			So(q.Len(), ShouldEqual, succ)
-		})
-		Convey("concurrent delete", func() {
-			prevLen := q.Len()
-			var fail int32
-			wg.Add(int(count / 2))
-			for i := 0; i < int(count)/2; i++ {
-				index := i
-				go func() {
-					if q.Delete(eles[index]) {
-						atomic.AddInt32(&fail, 1)
-					}
-					wg.Done()
-				}()
-			}
-			wg.Wait()
-			So(q.Len(), ShouldEqual, prevLen-fail)
-		})
+	if !l.Insert(0) || l.Len() != 1 {
+		t.Fatal("invalid insert")
+	}
+	if !l.Contains(0) {
+		t.Fatal("invalid contains")
+	}
+	if !l.Delete(0) || l.Len() != 0 {
+		t.Fatal("invalid delete")
+	}
+
+	if !l.Insert(20) || l.Len() != 1 {
+		t.Fatal("invalid insert")
+	}
+	if !l.Insert(22) || l.Len() != 2 {
+		t.Fatal("invalid insert")
+	}
+	if !l.Insert(21) || l.Len() != 3 {
+		t.Fatal("invalid insert")
+	}
+
+	var i int
+	l.Range(func(score int) bool {
+		if i == 0 && score != 20 {
+			t.Fatal("invalid range")
+		}
+		if i == 1 && score != 21 {
+			t.Fatal("invalid range")
+		}
+		if i == 2 && score != 22 {
+			t.Fatal("invalid range")
+		}
+		i++
+		return true
 	})
+
+	i = 0
+	l.Range(func(_ int) bool {
+		i++
+		return i != 2
+	})
+	if i != 2 {
+		t.Fatal("invalid range")
+	}
+
+	if !l.Delete(21) || l.Len() != 2 {
+		t.Fatal("invalid delete")
+	}
+
+	i = 0
+	l.Range(func(score int) bool {
+		if i == 0 && score != 20 {
+			t.Fatal("invalid range")
+		}
+		if i == 1 && score != 22 {
+			t.Fatal("invalid range")
+		}
+		i++
+		return true
+	})
+	l = NewInt()
+	const num = 10000
+	// Make rand shuffle array.
+	// The testArray contains [1,num]
+	testArray := make([]int, num)
+	testArray[0] = num + 1
+	for i := 1; i < num; i++ {
+		// We left 0, because it is the default score for head and tail.
+		// If we check the skiplist contains 0, there must be something wrong.
+		testArray[i] = int(i)
+	}
+	for i := len(testArray) - 1; i > 0; i-- { // Fisher–Yates shuffle
+		j := fastrandn(uint32(i + 1))
+		testArray[i], testArray[j] = testArray[j], testArray[i]
+	}
+
+	// Concurrent insert.
+	var wg sync.WaitGroup
+	for i := 0; i < num; i++ {
+		i := i
+		wg.Add(1)
+		go func() {
+			l.Insert(testArray[i])
+			wg.Done()
+		}()
+	}
+	wg.Wait()
+	if l.Len() != num {
+		t.Fatalf("invalid length expected %d, got %d", num, l.Len())
+	}
+
+	// Don't contains 0 after concurrent insertion.
+	if l.Contains(0) {
+		t.Fatal("contains 0 after concurrent insertion")
+	}
+
+	// Concurrent contains.
+	for i := 0; i < num; i++ {
+		i := i
+		wg.Add(1)
+		go func() {
+			if !l.Contains(testArray[i]) {
+				wg.Done()
+				panic(any(fmt.Sprintf("insert doesn't contains %d", any(i))))
+			}
+			wg.Done()
+		}()
+	}
+	wg.Wait()
+
+	// Concurrent delete.
+	for i := 0; i < num; i++ {
+		i := i
+		wg.Add(1)
+		go func() {
+			if !l.Delete(testArray[i]) {
+				wg.Done()
+				panic(any(fmt.Sprintf("can't delete %d", any(i))))
+			}
+			wg.Done()
+		}()
+	}
+	wg.Wait()
+	if l.Len() != 0 {
+		t.Fatalf("invalid length expected %d, got %d", 0, l.Len())
+	}
+
+	// Test all methods.
+	const smallRndN = 1 << 8
+	for i := 0; i < 1<<16; i++ {
+		wg.Add(1)
+		go func() {
+			r := fastrandn(num)
+			if r < 333 {
+				l.Insert(int(fastrandn(smallRndN)) + 1)
+			} else if r < 666 {
+				l.Contains(int(fastrandn(smallRndN)) + 1)
+			} else if r != 999 {
+				l.Delete(int(fastrandn(smallRndN)) + 1)
+			} else {
+				var pre int
+				l.Range(func(score int) bool {
+					if score < pre { // 0 is the default value for header and tail score
+						panic(any("invalid content"))
+					}
+					pre = score
+					return true
+				})
+			}
+			wg.Done()
+		}()
+	}
+	wg.Wait()
+
+	// Correctness 2.
+	var (
+		x     = NewInt()
+		y     = NewInt()
+		count = 10000
+	)
+
+	for i := 0; i < count; i++ {
+		x.Insert(i)
+	}
+
+	for i := 0; i < 16; i++ {
+		wg.Add(1)
+		go func() {
+			x.Range(func(score int) bool {
+				if x.Delete(score) {
+					if !y.Insert(score) {
+						panic(any("invalid insert"))
+					}
+				}
+				return true
+			})
+			wg.Done()
+		}()
+	}
+	wg.Wait()
+	if x.Len() != 0 || y.Len() != count {
+		t.Fatal("invalid length")
+	}
+
+	// Concurrent Insert and Delete in small zone.
+	x = NewInt()
+	var (
+		insertcount uint64 = 0
+		deletecount uint64 = 0
+	)
+	for i := 0; i < 16; i++ {
+		wg.Add(1)
+		go func() {
+			for i := 0; i < 1000; i++ {
+				if fastrandn(2) == 0 {
+					if x.Delete(int(fastrandn(10))) {
+						atomic.AddUint64(&deletecount, 1)
+					}
+				} else {
+					if x.Insert(int(fastrandn(10))) {
+						atomic.AddUint64(&insertcount, 1)
+					}
+				}
+			}
+			wg.Done()
+		}()
+	}
+	wg.Wait()
+	if insertcount < deletecount {
+		panic(any("invalid count"))
+	}
+	if insertcount-deletecount != uint64(x.Len()) {
+		panic(any("invalid count"))
+	}
 }
